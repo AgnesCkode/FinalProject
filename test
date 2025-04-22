@@ -1,1 +1,63 @@
+#include <avr/io.h>
+#include <util/delay.h>
+#include <stdlib.h>
+#include <avr/interrupt.h>
+#include "LCD.h"
 
+struct Timer {
+    int hours;
+    int minutes;
+    int seconds;
+};
+
+void sendCommand(char cmd, uint16_t pause);
+void sendChar(char letter);
+void initializeLCD(void);
+void sendStr(char *str);
+void sendNum(uint32_t number);
+void sendStrWithLoc(char *str, uint8_t row, uint8_t pos);
+void sendNumLoc(uint32_t number, uint8_t row, uint8_t pos);
+void enableDisable(uint16_t wait);
+void clearScreen(void);
+
+// Timer-related functions
+void updateTimer(struct Timer* timer);
+void printTime(struct Timer timer);
+
+
+void updateTimer(struct Timer* timer) {
+    timer->seconds++;
+    if (timer->seconds >= 60) {
+        timer->seconds = 0;
+        timer->minutes++;
+        if (timer->minutes >= 60) {
+            timer->minutes = 0;
+            timer->hours++;
+            if (timer->hours >= 24) {
+                timer->hours = 0;  
+            }
+        }
+    }
+}
+
+void printTime(struct Timer timer) {
+    char time_str[9];  
+    sprintf(time_str, "%02d:%02d:%02d", timer.hours, timer.minutes, timer.seconds);
+    
+    sendStrWithLoc(time_str, 0, 0);
+}
+
+int main(void) {
+    struct Timer timer = {0, 0, 0};  // Initial timer value is 00:00:00
+
+    initializeLCD();
+
+    while (1) {
+        updateTimer(&timer);   
+        printTime(timer);     
+
+        _delay_ms(1000); 
+    }
+
+    return 0;
+}
