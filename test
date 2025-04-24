@@ -1,13 +1,14 @@
+
 #include <avr/io.h>
 #include <util/delay.h>
-#include <stdlib.h>
+#include <stdio.h>
 #include <avr/interrupt.h>
 #include "LCD.h"
 
 struct Timer {
     int hours;
     int minutes;
-    int seconds;
+   int seconds;
 };
 
 void sendCommand(char cmd, uint16_t pause);
@@ -20,11 +21,24 @@ void sendNumLoc(uint32_t number, uint8_t row, uint8_t pos);
 void enableDisable(uint16_t wait);
 void clearScreen(void);
 
-// Timer-related functions
 void updateTimer(struct Timer* timer);
 void printTime(struct Timer timer);
 
+uint8_t pressed(uint8_t pinName, uint8_t pinNumber, uint8_t *pressedCounter);
+uint8_t debounce(uint8_t pinName, uint8_t pinNumber);
 
+uint8_t button1 = 0;
+uint8_t button2 = 0;
+uint8_t button3 = 0;
+uint8_t button4 = 0;
+
+struct Timer currentTime = {0, 0};  // Klokke starter på 00:00:00
+struct Timer alarmTime = {0, 0};    // Alarm starter på 00:00:00
+uint8_t alarm_on = 0;                   // Alarm status
+uint8_t clock_mode = 1;                 // 1 = Klokkemodus, 0 = Alarmmodus
+
+/*
+// Funksjon for å oppdatere timeren hvert sekund
 void updateTimer(struct Timer* timer) {
     timer->seconds++;
     if (timer->seconds >= 60) {
@@ -40,24 +54,141 @@ void updateTimer(struct Timer* timer) {
     }
 }
 
+// Funksjon for å oppdatere timeren hvert sekund
+void updateTimer(struct Timer* timer) {
+    // Kun oppdater klokken hvis vi er i klokkepåminnelse
+    if (clock_mode == 1) {
+        timer->seconds++;
+        if (timer->seconds >= 60) {
+            timer->seconds = 0;
+            timer->minutes++;
+            if (timer->minutes >= 60) {
+                timer->minutes = 0;
+                timer->hours++;
+                if (timer->hours >= 24) {
+                    timer->hours = 0;  
+                }
+            }
+        }
+    }
+}
+
+// Funksjon for å vise tid på LCD
 void printTime(struct Timer timer) {
     char time_str[9];  
     sprintf(time_str, "%02d:%02d:%02d", timer.hours, timer.minutes, timer.seconds);
     
-    sendStrWithLoc(time_str, 0, 0);
+    sendStrWithLoc(time_str, 0, 0);  // Vis tiden på rad 0, posisjon 0
+}
+
+// Funksjon for å vise alarmtiden på LCD
+void printAlarmTime(struct Timer alarmTime) {
+    char time_str[9];  
+    sprintf(time_str, "%02d:%02d:%02d", alarmTime.hours, alarmTime.minutes, alarmTime.seconds);
+    sendStrWithLoc(time_str, 1, 0);  // Vis alarmtid på rad 1, posisjon 0
+}
+
+// Funksjon for å oppdatere alarmstatus på skjermen
+void printAlarmStatus() {
+    if (alarm_on) {
+        sendStrWithLoc("Alarm ON", 1, 8);  // Vis Alarm ON på rad 1, posisjon 10
+    } else {
+        sendStrWithLoc("Alarm OFF", 1, 8); // Vis Alarm OFF på rad 1, posisjon 10
+    }
+}
+// Funksjon for å sjekke knappetrykk og oppdatere timer
+void checkButtons(struct Timer* timer) {
+    if (pressed(PINC, 0, &button1)) {
+        timer->hours = (timer->hours + 1) % 24; // Øk timene
+    }
+    if (pressed(PINC, 1, &button2)) {
+        timer->minutes = (timer->minutes + 1) % 60; // Øk minuttene
+    }
+    if (pressed(PINC, 2, &button3)) {
+        timer->seconds = (timer->seconds + 1) % 60; // Øk sekundene
+    }
+}
+
+// Funksjon for å aktivere alarm når timeren er på 00:00:00
+void checkAlarm(struct Timer* timer) {
+    if (alarm_on && timer->hours == 0 && timer->minutes == 0 && timer->seconds == 0) {
+        PORTD |= (1 << PD6); // Buzzer på (sett en pinne som utgang og aktiver buzzer)
+    }
+}
+
+// Funksjon for å aktivere/deaktivere alarmen og skifte modus
+void checkAlarmButton() {
+    if (pressed(PINC, 7, &button4)) { // knapp 4 styrer alarmen
+        alarm_on = !alarm_on; // Bytt alarmstatus
+        clock_mode = !clock_mode; // Bytt modus: Klokkemodus eller Alarmmodus
+    }
+}
+
+
+// Funksjon for debounce av knapper
+uint8_t debounce(uint8_t pinName, uint8_t pinNumber) {
+    if ((pinName & (1 << pinNumber)) == 0) {
+        _delay_ms(5);
+        if ((pinName & (1 << pinNumber)) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Funksjon for å sjekke knappetrykk og telle
+uint8_t pressed(uint8_t pinName, uint8_t pinNumber, uint8_t *pressedCounter) {
+    if (debounce(pinName, pinNumber)) {
+        if (*pressedCounter == 0) {
+            *pressedCounter = 1;
+            return 1;
+        }
+    } else {
+        *pressedCounter = 0;
+    }
+    return 0;
+}
+
+// Funksjon for å sette opp knapper med pull-up motstander
+void setup_knapper() {
+    DDRC &= ~((1 << PC0) | (1 << PC1) | (1 << PC2) | (1 << PC7)); // Sett PC0, PC1, PC2, PC7 som inngang
+    PORTC |= (1 << PC0) | (1 << PC1) | (1 << PC2) | (1 << PC7); // Aktivere pull-up på alle knapper
 }
 
 int main(void) {
-    struct Timer timer = {0, 0, 0};  // Initial timer value is 00:00:00
+ 
 
+    // Sett opp LCD og knapper
     initializeLCD();
+    setup_knapper();
 
+    _delay_ms(100);
+    sendStrWithLoc("BOOTING", 0, 3);
+    _delay_ms(500);
+
+    clearScreen();
+    
+    // Global interrupts
+    sei(); 
+    struct Timer timer = {0, 0, 0};  // Initial timer value is 00:00:00
     while (1) {
-        updateTimer(&timer);   
-        printTime(timer);     
+        //checkButtons(&timer);  // Sjekk knappene og oppdater timeren
+       // updateTimer(&timer);   // Oppdater timeren (sekunder, minutter, timer)
+        //printTime(timer);      // Vis tid på LCD
+       // checkAlarm(&timer);    // Sjekk om alarmen skal gå
 
-        _delay_ms(1000); 
-    }
+        checkButtons(&timer);  // Sjekk knappene og oppdater tid (klokke eller alarm)
+        checkAlarmButton();
+        updateTimer(&timer);   // Oppdater timeren (sekunder, minutter, timer)
+        printTime(timer);      // Vis tid på LCD
+        printAlarmTime(alarmTime);   // Vis alarmtid på LCD
+        printAlarmStatus();     // Vis alarmstatus på skjermen
+       
+       // Sjekk om alarmen skal gå
+        checkAlarm(&timer);
+
+       _delay_ms(1000);  // Vent 1 sekund
+   }
 
     return 0;
 }
