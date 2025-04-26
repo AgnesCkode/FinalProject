@@ -3,13 +3,16 @@
 #include <util/delay.h>
 #include "LCD.h"
 
+#define F_CPU 1000000UL  // Set CPU frequency to 1 MHz 
+#define BUZZER_PIN PD6   
+#define LED_PIN PD7 
+
 struct Timer {
     int hours;
     int minutes;
     int seconds;
 };
-
-
+/*
 void sendCommand(char cmd, uint16_t pause);
 void sendChar(char letter);
 void initializeLCD(void);
@@ -18,7 +21,7 @@ void sendNum(uint32_t number);
 void sendStrWithLoc(char *str, uint8_t row, uint8_t pos);
 void sendNumLoc(uint32_t number, uint8_t row, uint8_t pos);
 void enableDisable(uint16_t wait);
-void clearScreen(void);
+void clearScreen(void);*/
 
 void updateTimer(struct Timer* timer);
 void printTime(struct Timer timer);
@@ -26,194 +29,293 @@ void printAlarmTime(struct Timer alarmTime);
 void printAlarmStatus();
 
 uint8_t pressed(uint8_t pinName, uint8_t pinNumber, uint8_t *pressedCounter);
-uint8_t debounce(uint8_t pinName, uint8_t pinNumber);
+uint8_t debounce(uint8_t pinName, uint8_t pinNumber); 
 
-uint8_t button1 = 0;
-uint8_t button2 = 0;
-uint8_t button3 = 0;
+void initializeButton();
+void initializeLED();
+void initializeADC();
+void initializeTimer1();
+//void skru_på_alarm();
+//void skru_på_lys();
+void render();
+void alarm();
+void initializeButton();  // Function declaration for button initialization
+void setup_interrupts();  // Function declaration for interrupts setup
+void turnBuzzerOn();
+
+uint8_t alarm_on = 0;                // Alarm status
+uint8_t edit_mode = 0;               // 0 for timer, 1 for minutter
+uint8_t button1 = 0, button2 = 0;    // Knapper for modusveksling og alarm
 
 struct Timer currentTime = {0, 0, 0};  // Klokke starter på 00:00:00
 struct Timer alarmTime = {0, 0, 0};    // Alarm starter på 00:00:00
-uint8_t alarm_on = 0;                   // Alarm status
-uint8_t clock_mode = 1;                 // 1 = Klokkemodus, 0 = Alarmmodus
 
-
-#define BUZZER_PIN PD6
-#define LED_PIN PD5
-
-void init_pwm() {
-    DDRD |= (1 << BUZZER_PIN) | (1 << LED_PIN);
-
-    // Konfigurer Timer0 for buzzer i Fast PWM-modus
-    TCCR0 |= (1 << WGM00) | (1 << WGM01);  // Fast PWM-modus
-    TCCR0 |= (1 << COM00);  // Toggle OC0 ved sammenligningsmatch (for buzzer)
-    TCCR0 |= (1 << CS00);   // Ingen prescaler
-
-    // Konfigurer Timer1 for LED-kontroll i Fast PWM-modus
-    TCCR1A |= (1 << WGM10) | (1 << WGM11); // Fast PWM, 8-bit
-    TCCR1A |= (1 << COM1A1); // Clear OC1A ved sammenligningsmatch (for LED)
-    TCCR1B |= (1 << CS10);   // Ingen prescaler
-}
-
-void set_pwm_frequency(uint16_t frequency) {
-    // Beregn OCR0-verdi basert på frekvensen
-    uint16_t ocr_value = 256 - (F_CPU / (2 * 1024 * frequency));
-    if (ocr_value < 256) {
-        OCR0 = ocr_value;  // Sett frekvens for PWM
-    }
-}
-
-void increase_buzzer_sound() {
-    // Øk PWM-frekvens fra 1 kHz til 5 kHz
-    for (uint16_t freq = 1000; freq <= 5000; freq += 10) {
-        set_pwm_frequency(freq);
-        _delay_ms(60000);  // Vent 1 minutt før neste frekvensøkning
-    }
-}
-
-void increase_led_brightness() {
-    // Start med 0% lysstyrke og øk gradvis
-    for (uint8_t i = 0; i <= 255; i++) {
-        OCR1A = i;  // Sett PWM for LED (OCR1A styrer lysstyrken)
-        _delay_ms(350);  // Øk lysstyrken gradvis over 15 minutter
-    }
-}
-
-// Funksjon for å oppdatere timeren hvert sekund
 void updateTimer(struct Timer* timer) {
-    if (clock_mode == 1) {
-        timer->seconds++;
-        if (timer->seconds >= 60) {
-            timer->seconds = 0;
-            timer->minutes++;
-            if (timer->minutes >= 60) {
-                timer->minutes = 0;
-                timer->hours++;
-                if (timer->hours >= 24) {
-                    timer->hours = 0;  
-                }
+    timer->seconds++;
+    if (timer->seconds >= 60) {
+        timer->seconds = 0;
+        timer->minutes++;
+        if (timer->minutes >= 60) {
+            timer->minutes = 0;
+            timer->hours++;
+            if (timer->hours >= 24) {
+                timer->hours = 0;
             }
         }
     }
 }
 
+
+uint8_t pressed(uint8_t pinName, uint8_t pinNumber, uint8_t *pressedCounter)
+{
+    if (debounce(pinName, pinNumber))
+    {
+        if (*pressedCounter == 0)
+        {
+            *pressedCounter = 1;
+            return 1;
+        }
+    }
+    else
+    {
+        *pressedCounter = 0;
+    }
+    return 0;
+}
+
+uint8_t debounce(uint8_t pinName, uint8_t pinNumber) {
+  if ((pinName & (1 << pinNumber)) == 0) {
+      _delay_ms(5);
+      if ((pinName & (1 << pinNumber)) == 0) {
+          return 1;
+      }
+  }
+  return 0;
+}
+
+void initializeButton()
+{
+    DDRD &= ~((1 << PD2) | (1 << PD3));  // Sett PD2 (INT0) og PD3 (INT1) som innganger
+
+    PORTD |= (1 << PD2) | (1 << PD3);  // pull-up resistor
+
+    MCUCR |= (1 << ISC01) | (1 << ISC11);  
+    GICR |= (1 << INT0) | (1 << INT1);  // interrupts for INT0 og INT1
+
+    sei(); 
+}
+
+void initializeLED() {
+    // Sett PD5 som utgang
+    DDRD |= (1 << LED_PIN);  // Sett bit 5 i DDRD til 1 for å gjøre PD5 til en utgang
+    PORTD &= ~(1 << LED_PIN);  // Sett PD5 lav (LED er av når lav)
+}
+
+void initializeADC (void) {
+    ADMUX = (1 << REFS0);  // 5V reference voltage
+    ADMUX &= ~(1 << ADLAR); // 10-bit resolution (default)
+    ADMUX |= (1 << MUX2) | (1 << MUX0);  // ADC4 som input (PA4)
+    ADCSRA |= (1 << ADPS2);  // Prescaler of 16
+    ADCSRA |= (1 << ADEN) | (1 << ADIE);  // Enable ADC and ADC interrupt
+    ADCSRA |= (1 << ADSC);  // Start the conversion immediately
+}
+
+void initializeTimer1() {
+    TCCR1B |= (1 << WGM12);  // CTC mode
+    TCCR1B |= (1 << CS11) | (1 << CS10);  // Prescaler = 1024
+    OCR1A = 15624;  // Sett sammenligningsverdien for 1 sekund ved 1 MHz og 1024 prescaler
+    TIMSK |= (1 << OCIE1A);  // Aktiver avbrudd for Timer1 COMPA
+}
+
+void initializePWM_LED() {
+    initializeLED();  // Set PD6 as an output pin
+
+    // Configure Timer1 in Fast PWM mode (8-bit resolution)
+    TCCR2 |= (1 << COM21);  //Non-inverting mode
+    TCCR2 |= (1 << WGM21) | (1 << WGM20);   // Fast PWM
+    TCCR2 |= (1<<CS22); //Prescaler 64
+
+    // Start with a low frequency (e.g., 500 Hz)
+    OCR2 = 0;  
+}
+
+void initializePWM() {
+    DDRD |= (1 << BUZZER_PIN);  // Set PD6 as an output pin
+
+    // Configure Timer1 in Fast PWM mode (8-bit resolution)
+    TCCR1A |= (1 << COM1A0) | (1 << WGM10);  // Toggle OC1A (PD6) on compare match, Fast PWM mode
+    TCCR1B |= (1 << WGM12) | (1 << CS10);    // No prescaler, set WGM12 for Fast PWM mode
+
+    // Start with a low frequency (e.g., 500 Hz)
+    OCR1A = 255;  // Set OCR1A to the starting frequency
+}
+
+int32_t timeDifference(struct Timer time1, struct Timer time2)
+{
+    int32_t time1_total_sec = ((time1.hours * 60 * 60) + (time1.minutes * 60) + time1.seconds);
+
+    int32_t time2_total_sec = ((time2.hours * 60 * 60) + (time2.minutes * 60) + time2.seconds);
+    int32_t timeDifference = time1_total_sec - time2_total_sec;
+
+    return timeDifference;
+}
+
+ISR(TIMER1_COMPA_vect) {
+    // Oppdater tiden hvert sekund
+    updateTimer(&currentTime);  
+    render();  
+
+    if(timeDifference(alarmTime, currentTime) <= 900 && timeDifference(alarmTime, currentTime) >= 0)
+    {
+        OCR2 = (255 * (900 - timeDifference(alarmTime, currentTime)))/900;
+    } 
+
+    if (timeDifference(alarmTime, currentTime) <= 0 && alarm_on == 1) {
+        turnBuzzerOn();  // Turn on the buzzer if the alarm time is reached
+    }
+    
+    // if(timeDifference(alarmTime, currentTime) <= 0 && timeDifference(alarmTime, currentTime) >= -900){
+    //     turnBuzzerOn();
+    // }
+    
+    //  // When the current time matches or passes the alarm time, turn on the buzzer
+    //  if (timeDifference(alarmTime, currentTime) <= 0) {
+    //    turnBuzzerOn();  // Start buzzer if current time >= alarm time
+    //  }
+
+
+    /*
+    // If the alarm has been triggered for a while (e.g., after 10 seconds), turn off the buzzer
+    if (timeDifference(alarmTime, currentTime) <= -10) {
+        turnBuzzerOff();  // Turn off buzzer after 10 seconds
+    }
+*/
+    render();  
+}
+
+void render()
+{
+    printTime(currentTime);
+    printAlarmTime(alarmTime);
+    printAlarmStatus();
+}
+
+void alarm() {
+    // Aktiver buzzer på PD6
+    PORTD |= (1 << PD6);
+    
+    // Blink LED på PD5
+    for (int i = 0; i < 10; i++) {
+        PORTD |= (1 << LED_PIN);  // Slå på LED
+        _delay_ms(500);   
+        PORTD &= ~(1 << LED_PIN); // Slå av LED
+        _delay_ms(500);   
+    }
+
+    // Slå av buzzer etter blinkingen
+    PORTD &= ~(1 << PD6);
+}
+/*
+void turnAlarmoff()
+{
+    if(alarm is active)
+    {
+        if(button1 is pressed)
+    }
+}*/
+
+void turnBuzzerOn() {
+    PORTD |= (1 << BUZZER_PIN);  // Set bit 6 of PORTD to 1 (turn on buzzer)
+}
+/*
+void turnBuzzerOff() {
+    TCCR1A &= ~(1 << COM1A0);  // Disconnect PWM output (turn off buzzer)
+}*/
+
+void increaseBuzzerFrequency() {
+    // Gradually increase the frequency of the buzzer
+    for (uint16_t freq = 255; freq < 1023; freq++) {
+        OCR1A = freq;  // Increase OCR1A to change the frequency
+        _delay_ms(100);  // Wait 100ms before increasing the frequency again
+    }
+}
+
+ISR(ADC_vect) {
+    uint16_t adc_value = ADC;  // Hent ADC-verdi (10-bit)
+
+
+    if(!alarm_on){
+        if (edit_mode == 0) {
+            // Hvis i timer-modus, juster timeren
+            currentTime.hours = (adc_value * 24 / 1024) ;  // ADC-verdi til 0-23 timer
+        }
+        else{
+            // Hvis i minutters modus, juster minuttene
+            currentTime.minutes = (adc_value * 60 / 1024) ;  // ADC-verdi til 0-59 minutter
+        }
+    }
+    else {
+        if (edit_mode == 0) {
+            // Hvis i timer-modus, juster timeren
+            alarmTime.hours = (adc_value * 24 / 1024) ;  // ADC-verdi til 0-23 timer
+            }
+        else {
+            // Hvis i minutters modus, juster minuttene
+            alarmTime.minutes = (adc_value * 60 / 1024) ;  // ADC-verdi til 0-59 minutter
+        }
+    }   
+    //if else til alarmtid
+
+    ADCSRA |= (1 << ADSC);  // ny ADC-konvertering
+}
+
+
+// ISR for knapp 1 (bytt mellom timer og minutter)
+ISR(INT0_vect) {
+    if (debounce(PIND, 2)){// Bytter mellom timer og minutter
+    edit_mode = !edit_mode;
+    }
+}
+
+// ISR for knapp 2 (slå på/av alarmen)
+ISR(INT1_vect) {
+    if (debounce(PIND, 3)){
+        alarm_on = !alarm_on; // Bytt alarmstatus
+        }
+}
+
+// Funksjon for å vise tid på LCD (klokke)
 void printTime(struct Timer timer) {
     char time_str[6];  
-    sprintf(time_str, "%02d:%02d", timer.hours, timer.minutes);
+    sprintf(time_str, "%02d:%02d:%02d", timer.hours, timer.minutes, timer.seconds);
     sendStrWithLoc(time_str, 0, 0);  // Vis klokken på rad 0, posisjon 0
 }
 
+// Funksjon for å vise alarmtiden på LCD
 void printAlarmTime(struct Timer alarmTime) {
     char time_str[6];  
     sprintf(time_str, "%02d:%02d", alarmTime.hours, alarmTime.minutes);
     sendStrWithLoc(time_str, 1, 0);  // Vis alarmtid på rad 1, posisjon 0
 }
 
+// Funksjon for å oppdatere alarmstatus på skjermen
 void printAlarmStatus() {
     if (alarm_on) {
-        sendStrWithLoc("Alarm ON", 1, 6);
+        sendStrWithLoc("Alarm ON ", 1, 6);
     } else {
         sendStrWithLoc("Alarm OFF", 1, 6);
     }
 }
 
-// Funksjon for å sjekke knappetrykk og oppdatere tid (klokke eller alarm)
-void checkButtons() {
-    if (clock_mode == 1) {  // Klokkemodus (alarm er av)
-        // Øk timer for klokken
-        if (pressed(PIND, 2, &button1)) {
-            currentTime.hours = (currentTime.hours + 1) % 24; // Øk timene
-        }
-        // Øk minutter for klokken
-        if (pressed(PIND, 3, &button2)) {
-            currentTime.minutes = (currentTime.minutes + 1) % 60; // Øk minuttene
-        }
-    } else {  // Alarmmodus (alarm er på)
-        // Øk timer for alarmen
-        if (pressed(PIND, 2, &button1)) {
-            alarmTime.hours = (alarmTime.hours + 1) % 24; // Øk alarmtimen
-        }
-        // Øk minutter for alarmen
-        if (pressed(PIND, 3, &button2)) {
-            alarmTime.minutes = (alarmTime.minutes + 1) % 60; // Øk alarmminuttene
-        }
-    }
-}
-
-// ISR for knapp 1 (endre timer for klokke eller alarm)
-ISR(INT0_vect) {
-    if (clock_mode == 1) {
-        currentTime.hours = (currentTime.hours + 1) % 24;
-    } else {
-        alarmTime.hours = (alarmTime.hours + 1) % 24;
-    }
-}
-
-// ISR for knapp 2 (endre minutter for klokke eller alarm)
-ISR(INT1_vect) {
-    if (clock_mode == 1) {
-        currentTime.minutes = (currentTime.minutes + 1) % 60;
-    } else {
-        alarmTime.minutes = (alarmTime.minutes + 1) % 60;
-    }
-}
-
-// ISR for knapp 3 (bytt modus mellom klokkepåminnelse og alarmmodus)
-ISR(INT2_vect) {
-    alarm_on = !alarm_on;  // Bytt alarmstatus
-    clock_mode = !clock_mode;  // Bytt mellom klokkemodus og alarmmodus
-}
-
-// Funksjon for debounce av knapper
-uint8_t debounce(uint8_t pinName, uint8_t pinNumber) {
-    if ((PINC & (1 << pinNumber)) == 0) {  // Les pinne via PINC
-        _delay_ms(5); // liten forsinkelse for debounce
-        if ((PINC & (1 << pinNumber)) == 0) {  // Bekreft at knappen fortsatt er trykket
-            return 1;  // Knapp er trykket
-        }
-    }
-    return 0;  // Knapp er ikke trykket
-}
-
-// Funksjon for å sjekke knappetrykk og telle
-uint8_t pressed(uint8_t pinName, uint8_t pinNumber, uint8_t *pressedCounter) {
-    if (debounce(pinName, pinNumber)) {
-        if (*pressedCounter == 0) {
-            *pressedCounter = 1;
-            return 1;
-        }
-    } else {
-        *pressedCounter = 0;
-    }
-    return 0;
-}
-
-// Funksjon for å sette opp knapper med pull-up motstander
-void setup_knapper() {
-    DDRC &= ~((1 << PD2) | (1 << PD3) | (1 << PD7)); // Sett PC0, PC1, PC7 som inngang
-    PORTC |= (1 << PD2) | (1 << PD3) | (1 << PD7); // Aktivere pull-up på alle knapper
-}
-
-void setup_interrupts() {
-    GICR |= (1 << INT0) | (1 << INT1);    // Enable external interrupts INT0 and INT1
-
-    MCUCR |= (1 << ISC01) | (1 << ISC00);  // Rising edge trigger for INT0
-    MCUCR |= (1 << ISC11);                  // Falling edge trigger for INT1
-
-    sei();
-}
-
-void updateDisplay() {
-    updateTimer(&currentTime);    // Oppdater tiden (sekunder, minutter, timer)
-    printTime(currentTime);       // Vis tid på LCD
-    printAlarmTime(alarmTime);    // Vis alarmtid på LCD
-    printAlarmStatus();           // Vis alarmstatus på skjermen
-}
-
-int main(void) {
+int main(void)
+{
     initializeLCD();  
-    setup_knapper();  // Sett opp knapper med pull-up motstander
-    setup_interrupts();  // Sett opp interrupts for knappene
+    initializeButton();
+    //setup_interrupts();  
+    initializeADC(); 
+    initializeTimer1();
+    //initializePWM();
+    initializePWM_LED();
 
     _delay_ms(100);
     sendStrWithLoc("BOOTING", 0, 3);
@@ -221,19 +323,13 @@ int main(void) {
 
     clearScreen();
 
-    //updateDisplay();
+    while(1)
+    {
 
-    // Global interrupts
-    sei();
-
-    struct Timer timer = {0, 0, 0};  // Initial timer value is 00:00:00
-
-    init_pwm();  // Initialize PWM for buzzer and LED
-
-    while (1) {
-        updateDisplay();  // Oppdater skjermen kontinuerlig (vis tid, alarmtid og alarmstatus)
-        _delay_ms(1000);    }
+    }
 
     return 0;
 }
+
+
 
